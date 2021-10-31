@@ -1,9 +1,10 @@
+from bokeh.models.markers import X, Y
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from pandas import DataFrame as df
-# from icecream import ic
+
 import plotly
 
 
@@ -12,10 +13,11 @@ def _get_ecg_data():
     ecg_data_raw = np.loadtxt("ecg 100.dat", skiprows=2)
     ecg_time = ecg_data_raw[:, 0]
     ecg_norm = np.sum(ecg_data_raw[:, 1]) / len(ecg_data_raw[:, 1])
-    # ecg_norm = 0
-    ecg_data = ecg_data_raw[:, 1] + np.abs(ecg_norm)
-    fs=len(ecg_data) / (ecg_time[-1] - ecg_time[0])
-    return ecg_time, ecg_data,fs
+    # print(ecg_norm)
+    ecg_data = ecg_data_raw[:, 1]
+    fs = int(len(ecg_data) / (ecg_time[-1] - ecg_time[0]))
+    print(fs)
+    return ecg_time, ecg_data, fs
 
 
 class Utils:
@@ -25,7 +27,6 @@ class Utils:
             x, (0, int(2 ** ((log - log % 1) + 1) - len(x))), mode="constant"
         ).flatten()
 
-    # @st.cache
     def DFT(self, x):
 
         if np.log2(len(x)) % 1 > 0:
@@ -38,7 +39,6 @@ class Utils:
         X = np.dot(W, x.reshape(-1, 1))
         return X.flatten()
 
-    # @st.cache
     def FFT(self, x):
 
         if np.log2(len(x)) % 1 > 0:
@@ -55,7 +55,7 @@ class Utils:
         W = np.exp(-2j * np.pi * n * k / N_min)
         X = np.dot(W, x.reshape((N_min, -1)))
 
-        # build-up each level of the recursive calculation all at once
+        # Recursive calculation all at once
         while X.shape[0] < N:
             X_even = X[:, : int(X.shape[1] / 2)]
             X_odd = X[:, int(X.shape[1] / 2) :]
@@ -68,11 +68,18 @@ class Utils:
         N = len(X)
         n = np.arange(N)
         f = (n * fs / N).flatten()
-        X_magnitude = np.abs(X)
-
-        X_magnitude_norm = np.append(X_magnitude[0] / 2, X_magnitude[1:] / (N / 2))
-        # ic(X_magnitude_norm)
-        return {"Magnitude": X_magnitude_norm.flatten(), "Frequency": f}
+        X_norm = X
+        X_norm[1:] = X_norm[1:] * 2
+        X_norm = X_norm / N
+        X_magnitude_norm = np.abs(X_norm)
+        X_power = np.abs(X) ** 2
+        return {
+            "Magnitude": np.array_split(X_magnitude_norm, 2)[0].flatten(),
+            "Frequency": np.array_split(f, 2)[0].flatten(),
+        }, {
+            "Power": np.array_split(X_power, 2)[0],
+            "Frequency": np.array_split(f, 2)[0],
+        }
 
     @st.cache(allow_output_mutation=True)
     def get_sine_wave(self, state):
@@ -102,30 +109,147 @@ class Utils:
         window = self.window_padding(window, start, end)
         windowed_ecg = self.ecg_data * window
         return {
-            "Windowed Waves": windowed_ecg,
+            "Windowed Waves": windowed_ecg[start : end + 1],
             "Window Name": window_name,
-        }
+        }, {"Windowed Waves": windowed_ecg}
 
-    @st.cache
-    def FFT_rec(self, p_rec, q_rec, t_rec, rec_ecg,fs):
-        p_rec_fft = self.DFT_FFT_magnitude_norm(self.FFT(p_rec["Windowed Waves"]),fs)
-        q_rec_fft = self.DFT_FFT_magnitude_norm(self.FFT(q_rec["Windowed Waves"]),fs)
-        t_rec_fft = self.DFT_FFT_magnitude_norm(self.FFT(t_rec["Windowed Waves"]),fs)
-        rec_ecg_fft = self.DFT_FFT_magnitude_norm(self.FFT(rec_ecg),fs)
-        return p_rec_fft, q_rec_fft, t_rec_fft, rec_ecg_fft
+    def FFT_window(self, p, q, t, ecg, fs):
+        p_fft, p_power = self.DFT_FFT_magnitude_norm(self.FFT(p["Windowed Waves"]), fs)
+        q_fft, q_power = self.DFT_FFT_magnitude_norm(self.FFT(q["Windowed Waves"]), fs)
+        t_fft, t_power = self.DFT_FFT_magnitude_norm(self.FFT(t["Windowed Waves"]), fs)
+        ecg_fft, ecg_power = self.DFT_FFT_magnitude_norm(
+            self.FFT(ecg["Windowed Waves"]), fs
+        )
+        return p_fft, q_fft, t_fft, ecg_fft, p_power, q_power, t_power, ecg_power
 
-    @st.cache
-    def FFT_han(self, p_han, q_han, t_han, han_ecg,fs):
-        p_han_fft = self.DFT_FFT_magnitude_norm(self.FFT(p_han["Windowed Waves"]),fs)
-        q_han_fft = self.DFT_FFT_magnitude_norm(self.FFT(q_han["Windowed Waves"]),fs)
-        t_han_fft = self.DFT_FFT_magnitude_norm(self.FFT(t_han["Windowed Waves"]),fs)
-        han_ecg_fft = self.DFT_FFT_magnitude_norm(self.FFT(han_ecg),fs)
-        return p_han_fft, q_han_fft, t_han_fft, han_ecg_fft
+    def window_pack(self, two_a_state, fs, window_name, window_function, cl, cr):
+        cl.markdown("#### " + window_name)
+        container = cl.container()
+        ecg, ecg_to_fft = self.ecg_window_plotter(
+            "Single ECG Wave",
+            two_a_state["P Start"],
+            two_a_state["T End"],
+            window_function,
+            cl,
+        )
+        p, p_to_fft = self.ecg_window_plotter(
+            "P Wave",
+            two_a_state["P Start"],
+            two_a_state["P End"],
+            window_function,
+            cl,
+        )
+        q, q_to_fft = self.ecg_window_plotter(
+            "QRS Wave",
+            two_a_state["QRS Start"],
+            two_a_state["QRS End"],
+            window_function,
+            cl,
+        )
+        t, t_to_fft = self.ecg_window_plotter(
+            "T Wave",
+            two_a_state["T Start"],
+            two_a_state["T End"],
+            window_function,
+            cl,
+        )
+        if two_a_state["Full Data"]:
+            (
+                p_fft,
+                q_fft,
+                t_fft,
+                ecg_fft,
+                p_power,
+                q_power,
+                t_power,
+                ecg_power,
+            ) = self.FFT_window(p_to_fft, q_to_fft, t_to_fft, ecg_to_fft, fs)
+        else:
+            (
+                p_fft,
+                q_fft,
+                t_fft,
+                ecg_fft,
+                p_power,
+                q_power,
+                t_power,
+                ecg_power,
+            ) = self.FFT_window(p, q, t, ecg, fs)
+
+        p_center, q_center, t_center, ecg_center = self.center_freq(
+            p_fft, q_fft, t_fft, ecg_fft
+        )
+        self.center_freq_plotter(p_center, q_center, t_center, ecg_center, container)
+        p_mean_power, q_mean_power, t_mean_power, ecg_mean_power = self.mean_power(
+            p_power, q_power, t_power, ecg_power
+        )
+
+        mean_power_container = self.ecg_window_fft_plotter(
+            p_fft, q_fft, t_fft, ecg_fft, window_name, cr
+        )
+        self.mean_power_plotter(
+            p_mean_power,
+            q_mean_power,
+            t_mean_power,
+            ecg_mean_power,
+            mean_power_container,
+        )
+
+    def center_freq(self, p, q, t, ecg):
+        p_center = np.sum(p["Frequency"] * p["Magnitude"]) / np.sum(p["Magnitude"])
+        q_center = np.sum(q["Frequency"] * q["Magnitude"]) / np.sum(q["Magnitude"])
+        t_center = np.sum(t["Frequency"] * t["Magnitude"]) / np.sum(t["Magnitude"])
+        ecg_center = np.sum(ecg["Frequency"] * ecg["Magnitude"]) / np.sum(
+            ecg["Magnitude"]
+        )
+        return p_center, q_center, t_center, ecg_center
+
+    def mean_power(self, p_power, q_power, t_power, ecg_power):
+        # fs = 360
+        # f= 32768
+        p_mean_power = np.sum(p_power["Power"] * p_power["Frequency"]) / np.sum(
+            p_power["Power"]
+        )
+        q_mean_power = np.sum(q_power["Power"] * q_power["Frequency"]) / np.sum(
+            q_power["Power"]
+        )
+        t_mean_power = np.sum(t_power["Power"] * t_power["Frequency"]) / np.sum(
+            t_power["Power"]
+        )
+        ecg_mean_power = np.sum(ecg_power["Power"] * ecg_power["Frequency"]) / np.sum(
+            ecg_power["Power"]
+        )
+        return p_mean_power, q_mean_power, t_mean_power, ecg_mean_power
+
+    def center_freq_plotter(self, p_center, q_center, t_center, ecg_center, container):
+        center_freq_df = df(
+            [ecg_center, p_center, q_center, t_center],
+            index=["ECG Wave", "P Wave", "QRS Wave", "T Wave"],
+        )
+        container.markdown("Center Frequencies")
+        container.table(center_freq_df)
+
+    def mean_power_plotter(
+        self,
+        p_mean_power,
+        q_mean_power,
+        t_mean_power,
+        ecg_mean_power,
+        mean_power_container,
+    ):
+        mean_power_df = df(
+            [ecg_mean_power, p_mean_power, q_mean_power, t_mean_power],
+            index=["ECG Wave", "P Wave", "QRS Wave", "T Wave"],
+        )
+        mean_power_container.markdown("Mean Power Frequency")
+        mean_power_container.table(mean_power_df)
 
     def one_c_plotter(self, t, x, x_dft, x_fft):
         df_one_c = df({"Time": t, "Signal": x})
         df_fig = px.line(
-            x=df_one_c["Time"], y=df_one_c["Signal"], color_discrete_sequence=["cyan"]
+            x=df_one_c["Time"],
+            y=df_one_c["Signal"],
+            color_discrete_sequence=["cyan"],
         )
         df_fig.update_layout(
             xaxis_title="Time", yaxis_title="Amplitude", title="Signal"
@@ -139,6 +263,7 @@ class Utils:
         dft_fig.update_layout(
             xaxis_title="Frequency (Hz)", yaxis_title="Magnitude", title="DFT Magnitude"
         )
+        dft_fig.update_traces(width=0.1)
         st.plotly_chart(dft_fig, use_container_width=True)
 
         fft_df = df({"Magnitude": x_fft["Magnitude"], "Frequency": x_fft["Frequency"]})
@@ -148,12 +273,15 @@ class Utils:
         fft_fig.update_layout(
             xaxis_title="Frequency (Hz)", yaxis_title="Magnitude", title="FFT Magnitude"
         )
+        fft_fig.update_traces(width=0.1)
         st.plotly_chart(fft_fig, use_container_width=True)
 
     def _ecg_plotter(self, raw_data_container):
         df_ecg = df({"Time": self.ecg_time, "Signal": self.ecg_data})
         df_fig = px.line(
-            x=df_ecg["Time"], y=df_ecg["Signal"], color_discrete_sequence=["cyan"]
+            x=df_ecg["Time"],
+            y=df_ecg["Signal"],
+            color_discrete_sequence=["cyan"],
         )
         df_fig.update_layout(
             xaxis_title="Time",
@@ -162,95 +290,86 @@ class Utils:
         )
         raw_data_container.plotly_chart(df_fig, use_container_width=True)
 
-    def ecg_window_plotter(self, wave_name, start, end, window):
-        windowed_ecg = self.ecg_window(start, end, window)
+    def ecg_window_plotter(self, wave_name, start, end, window, c):
+        windowed_ecg, windowed_ecg_to_fft = self.ecg_window(start, end, window)
         ecg_window_df = df(
-            {"Time": self.ecg_time, "Signal": windowed_ecg["Windowed Waves"]}
+            {
+                "Time": self.ecg_time[start : end + 1],
+                "Signal": windowed_ecg["Windowed Waves"],
+            }
         )
         df_fig = px.line(
-            ecg_window_df, x="Time", y="Signal", color_discrete_sequence=["cyan"]
+            ecg_window_df,
+            x="Time",
+            y="Signal",
+            color_discrete_sequence=["cyan"],
         )
         df_fig.update_layout(
             xaxis_title="Time (t)",
             yaxis_title="Amplitude (mV)",
             title=wave_name + " " + windowed_ecg["Window Name"],
         )
-        st.plotly_chart(df_fig, use_container_width=True)
-        return windowed_ecg
+        c.plotly_chart(df_fig, use_container_width=True)
+        return windowed_ecg, windowed_ecg_to_fft
 
-    def rec_plotter(self, p_rec_fft, q_rec_fft, t_rec_fft, rec_ecg_fft):
-        p_rec_fft_df = df(
-            {"Frequency": p_rec_fft["Frequency"], "Magnitude": p_rec_fft["Magnitude"]}
+    def ecg_window_fft_plotter(self, p_fft, q_fft, t_fft, ecg_fft, window_name, c):
+        p_fft_df = df(
+            {"Frequency": p_fft["Frequency"], "Magnitude": p_fft["Magnitude"]}
         )
-        p_rec_fft_fig = px.bar(
-            p_rec_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
+        p_fft_fig = px.line(
+            p_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
         )
-        q_rec_fft_df = df(
-            {"Frequency": q_rec_fft["Frequency"], "Magnitude": q_rec_fft["Magnitude"]}
+        p_fft_fig.update_layout(
+            title="P Wave FFT (" + window_name + ")",
+            xaxis_title="Frequency (Hz)",
+            yaxis_title="Magnitude",
         )
-        q_rec_fft_fig = px.bar(
-            q_rec_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
+
+        q_fft_df = df(
+            {"Frequency": q_fft["Frequency"], "Magnitude": q_fft["Magnitude"]}
         )
-        t_rec_fft_df = df(
-            {"Frequency": t_rec_fft["Frequency"], "Magnitude": t_rec_fft["Magnitude"]}
+        q_fft_fig = px.line(
+            q_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
         )
-        t_rec_fft_fig = px.bar(
-            t_rec_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
+        q_fft_fig.update_layout(
+            title="QRS Wave FFT (" + window_name + ")",
+            xaxis_title="Frequency (Hz)",
+            yaxis_title="Magnitude",
         )
-        rec_ecg_fft_df = df(
+
+        t_fft_df = df(
+            {"Frequency": t_fft["Frequency"], "Magnitude": t_fft["Magnitude"]}
+        )
+        t_fft_fig = px.line(
+            t_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
+        )
+        t_fft_fig.update_layout(
+            title="T Wave FFT (" + window_name + ")",
+            xaxis_title="Frequency (Hz)",
+            yaxis_title="Magnitude",
+        )
+
+        ecg_fft_df = df(
             {
-                "Frequency": rec_ecg_fft["Frequency"],
-                "Magnitude": rec_ecg_fft["Magnitude"],
+                "Frequency": ecg_fft["Frequency"],
+                "Magnitude": ecg_fft["Magnitude"],
             }
         )
-        rec_ecg_fft_fig = px.bar(
-            rec_ecg_fft_df,
-            x="Frequency",
-            y="Magnitude",
-            color_discrete_sequence=["cyan"],
+        ecg_fft_fig = px.line(
+            ecg_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
         )
-
-        st.plotly_chart(p_rec_fft_fig, use_container_width=True)
-        st.plotly_chart(q_rec_fft_fig, use_container_width=True)
-        st.plotly_chart(t_rec_fft_fig, use_container_width=True)
-        st.plotly_chart(rec_ecg_fft_fig, use_container_width=True)
-
-    def han_plotter(self, p_han_fft, q_han_fft, t_han_fft, han_ecg_fft):
-        p_han_fft_df = df(
-            {"Frequency": p_han_fft["Frequency"], "Magnitude": p_han_fft["Magnitude"]}
+        ecg_fft_fig.update_layout(
+            title="ECG FFT (" + window_name + ")",
+            xaxis_title="Frequency (Hz)",
+            yaxis_title="Magnitude",
         )
-        p_han_fft_fig = px.bar(
-            p_han_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
-        )
-        q_han_fft_df = df(
-            {"Frequency": q_han_fft["Frequency"], "Magnitude": q_han_fft["Magnitude"]}
-        )
-        q_han_fft_fig = px.bar(
-            q_han_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
-        )
-        t_han_fft_df = df(
-            {"Frequency": t_han_fft["Frequency"], "Magnitude": t_han_fft["Magnitude"]}
-        )
-        t_han_fft_fig = px.bar(
-            t_han_fft_df, x="Frequency", y="Magnitude", color_discrete_sequence=["cyan"]
-        )
-        han_ecg_fft_df = df(
-            {
-                "Frequency": han_ecg_fft["Frequency"],
-                "Magnitude": han_ecg_fft["Magnitude"],
-            }
-        )
-        han_ecg_fft_fig = px.bar(
-            han_ecg_fft_df,
-            x="Frequency",
-            y="Magnitude",
-            color_discrete_sequence=["cyan"],
-        )
-
-        st.plotly_chart(p_han_fft_fig, use_container_width=True)
-        st.plotly_chart(q_han_fft_fig, use_container_width=True)
-        st.plotly_chart(t_han_fft_fig, use_container_width=True)
-        st.plotly_chart(han_ecg_fft_fig, use_container_width=True)
+        c.markdown("#### " + window_name + " FFT")
+        mean_power_container = c.container()
+        c.plotly_chart(ecg_fft_fig, use_container_width=True)
+        c.plotly_chart(p_fft_fig, use_container_width=True)
+        c.plotly_chart(q_fft_fig, use_container_width=True)
+        c.plotly_chart(t_fft_fig, use_container_width=True)
+        return mean_power_container
 
 
 class DFTFFTBackend(Utils):
@@ -266,95 +385,23 @@ class DFTFFTBackend(Utils):
     def _run_one_c(self, one_c_state):
         fs, t, x = self.get_sine_wave(one_c_state)
         x_dft = self.DFT(x)
-        x_dft = self.DFT_FFT_magnitude_norm(x_dft, fs)
+        x_dft, _ = self.DFT_FFT_magnitude_norm(x_dft, fs)
         x_fft = self.FFT(x)
-        x_fft = self.DFT_FFT_magnitude_norm(x_fft, fs)
+        x_fft, _ = self.DFT_FFT_magnitude_norm(x_fft, fs)
 
         self.one_c_plotter(t, x, x_dft, x_fft)
 
     def _run_two_a(self, two_a_state, raw_data_container):
-        self.ecg_time, self.ecg_data,fs = _get_ecg_data()
+        self.ecg_time, self.ecg_data, fs = _get_ecg_data()
 
         self._ecg_plotter(raw_data_container)
-        c_rec, c_han = st.columns(2)
-        show_rec = c_rec.checkbox("Show Rectangular Window")
-        show_han = c_han.checkbox("Show Hanning Window")
+        cl, cr = st.columns(2)
+        show_rec = cl.checkbox("Show Rectangular Window")
+        show_han = cr.checkbox("Show Hanning Window")
         if show_rec:
-            rec_container = st.empty()
-
-            p_rec = self.ecg_window_plotter(
-                "P Wave",
-                two_a_state["P Start"],
-                two_a_state["P End"],
-                self.rectangular_window,
-            )
-            q_rec = self.ecg_window_plotter(
-                "QRS Wave",
-                two_a_state["QRS Start"],
-                two_a_state["QRS End"],
-                self.rectangular_window,
-            )
-            t_rec = self.ecg_window_plotter(
-                "T Wave",
-                two_a_state["T Start"],
-                two_a_state["T End"],
-                self.rectangular_window,
-            )
-            rec_ecg = (
-                p_rec["Windowed Waves"]
-                + q_rec["Windowed Waves"]
-                + t_rec["Windowed Waves"]
+            self.window_pack(
+                two_a_state, fs, "Rectangular", self.rectangular_window, cl, cr
             )
 
-            df_rec = df({"Time": self.ecg_time, "Signal": rec_ecg})
-            df_fig_rec = px.line(
-                df_rec, x="Time", y="Signal", color_discrete_sequence=["cyan"]
-            )
-            rec_container.markdown("#### Rectangular")
-            rec_container.plotly_chart(df_fig_rec, use_container_width=True)
-            
-            with st.spinner("Calculating Rectangular FFT..."):
-                p_rec_fft, q_rec_fft, t_rec_fft, rec_ecg_fft = self.FFT_rec(
-                    p_rec, q_rec, t_rec, rec_ecg,fs
-                )
-
-            self.rec_plotter(p_rec_fft, q_rec_fft, t_rec_fft, rec_ecg_fft)
         if show_han:
-            han_container = st.empty()
-
-            p_han = self.ecg_window_plotter(
-                "P Wave",
-                two_a_state["P Start"],
-                two_a_state["P End"],
-                self.hanning_window,
-            )
-            q_han = self.ecg_window_plotter(
-                "QRS Wave",
-                two_a_state["QRS Start"],
-                two_a_state["QRS End"],
-                self.hanning_window,
-            )
-            t_han = self.ecg_window_plotter(
-                "T Wave",
-                two_a_state["T Start"],
-                two_a_state["T End"],
-                self.hanning_window,
-            )
-            han_ecg = (
-                p_han["Windowed Waves"]
-                + q_han["Windowed Waves"]
-                + t_han["Windowed Waves"]
-            )
-
-            df_han = df({"Signal": han_ecg, "Time": self.ecg_time})
-            df_fig_han = px.line(
-                df_han, x="Time", y="Signal", color_discrete_sequence=["cyan"]
-            )
-            han_container.markdown("#### Hanning")
-            han_container.plotly_chart(df_fig_han, use_container_width=True)
-            
-            with st.spinner("Calculating Hanning FFT..."):
-                p_han_fft, q_han_fft, t_han_fft, han_ecg_fft = self.FFT_han(
-                    p_han, q_han, t_han, rec_ecg,fs
-                )
-            self.han_plotter(p_han_fft, q_han_fft, t_han_fft, han_ecg_fft)
+            self.window_pack(two_a_state, fs, "Hanning", self.hanning_window, cl, cr)
