@@ -240,7 +240,7 @@ class Main(DFTFFTBackend):
                     - Identify effect of rectangular and hanning window to frequency domain data.
                     """
         )
-        with st.expander("2 a"):
+        with st.expander("2 a b"):
             raw_data_container = st.container()
 
             two_a_state = {}
