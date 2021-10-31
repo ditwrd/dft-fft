@@ -3,7 +3,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from pandas import DataFrame as df
-from icecream import ic
+# from icecream import ic
 import plotly
 
 
