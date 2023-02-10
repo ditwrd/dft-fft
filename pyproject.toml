@@ -5,7 +5,7 @@ description = ""
 authors = ["Aditya Wardianto <adityawardianto.19073@mhs.its.ac.id>"]
 
 [tool.poetry.dependencies]
-python = "3.9.7"
+python = "^3.9.7"
 streamlit = "^1.1.0"
 numpy = "^1.21.3"
 plotly = "^5.3.1"
